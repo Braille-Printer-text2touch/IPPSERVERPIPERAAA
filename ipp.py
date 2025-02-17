@@ -1,9 +1,7 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-import os, posix
-import struct
-import socket
+import json, io, struct, socket
 from zeroconf import ServiceInfo, Zeroconf
+from PyPDF2 import PdfReader
 
 class IPPRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -11,13 +9,12 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
         Handle POST requests by echoing back the received data.
         """
         # Log the request path and headers
-        print(f"Received POST request on path: {self.path}")
-        print(f"Headers: {self.headers}")
-        
+        print(f"Received POST request on path: \n\n{self.path}\n")
+        print(f"Headers: \n\n{self.headers}\n")
+
         # Read the request body
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
-        print(f"Request Body: {body.decode('utf-8', errors='replace')}")
 
         # Decode IPP headers from binary
         try:
@@ -28,41 +25,24 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Bad Request")
             return
 
-        # Save the received print job data
-        job_filename = f"/tmp/print_job_{request_id}.raw"
-        with open(job_filename, "wb") as f:
-            f.write(body[4:])  # Skip the IPP header and save the document data
+        # Parse uploaded file
+        pdf_reader = PdfReader(io.BytesIO(body))
+        parsed_ascii = pdf_reader.pages[0].extract_text()
 
-        print(f"Print job saved as {job_filename}")
-
-        # Send response
+        # Send response (just echo back first 25 chars)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({"status": "Print job received", "file": job_filename}).encode('utf-8'))
-
-        # # Respond with the echoed data
-        # self.send_response(200)
-        # self.send_header("Content-Type", "application/json")
-        # self.end_headers()
-
-        SPEECH = body.decode('utf-8', errors='replace')
-        response_data = {
-            "received": SPEECH,
-        }
-        self.wfile.write(json.dumps(response_data).encode('utf-8'))
+        self.wfile.write(json.dumps({"status": "Print job received", "parsed_text": parsed_ascii[:min(content_length, 25)]}).encode('utf-8'))
 
         # PIPING!!
         pipe_path = "/var/run/user/1000/text2type_pipe"
 
-        # try:
-        with open(pipe_path, "w") as pipe:
-            pipe.write("HERE ARE SOME WORDS: ")
-            pipe.write(SPEECH)
-        # except FileExistsError:
-        #     print("Named pipe already exists!")
-        # except OSError as e:
-        #     print(f"Named pipe creation failed: {e}")
+        try:
+            with open(pipe_path, "w") as pipe:
+                pipe.write(parsed_ascii)
+        except OSError as e:
+            print(f"Opening Text2Touch pipe failed: {e}")
 
     def do_GET(self):
         """
